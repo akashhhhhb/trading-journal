@@ -21,6 +21,30 @@ mongodb+srv://<username>:<password>@<cluster-host>/trading_journal?retryWrites=t
 
 Do not commit the real connection string.
 
+If your username or password contains special characters, URL-encode them before putting them into `MONGODB_URI`. This is required for characters such as `@`, `:`, `/`, `?`, `#`, `%`, `&`, and spaces.
+
+Examples:
+
+- `@` becomes `%40`
+- `:` becomes `%3A`
+- `#` becomes `%23`
+- `%` becomes `%25`
+- space becomes `%20`
+
+So this will fail:
+
+```text
+mongodb+srv://akash:p@ssword@cluster0.example.mongodb.net/trading_journal?retryWrites=true&w=majority
+```
+
+Use this instead:
+
+```text
+mongodb+srv://akash:p%40ssword@cluster0.example.mongodb.net/trading_journal?retryWrites=true&w=majority
+```
+
+The simplest option is to create a MongoDB Atlas database user password with only letters and numbers, then update the Render `MONGODB_URI` environment variable.
+
 ## 2. Push Project To GitHub
 
 Render deploys from a Git repository. Push this folder to GitHub, GitLab, or Bitbucket.
