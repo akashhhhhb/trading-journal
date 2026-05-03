@@ -1,0 +1,28 @@
+FROM node:20-alpine AS frontend-build
+WORKDIR /workspace
+
+COPY package*.json ./
+RUN npm ci
+
+COPY index.html tsconfig*.json vite.config.ts ./
+COPY src ./src
+RUN npm run build
+
+FROM eclipse-temurin:21-jdk AS backend-build
+WORKDIR /workspace/backend
+
+COPY backend/gradlew backend/gradlew.bat backend/settings.gradle backend/build.gradle ./
+COPY backend/gradle ./gradle
+RUN chmod +x ./gradlew && ./gradlew --no-daemon dependencies
+
+COPY backend/src ./src
+COPY --from=frontend-build /workspace/dist ./src/main/resources/static
+RUN ./gradlew --no-daemon clean bootJar
+
+FROM eclipse-temurin:21-jre
+WORKDIR /app
+
+COPY --from=backend-build /workspace/backend/build/libs/trading-journal-api-*.jar app.jar
+EXPOSE 8080
+
+ENTRYPOINT ["java", "-jar", "app.jar"]
