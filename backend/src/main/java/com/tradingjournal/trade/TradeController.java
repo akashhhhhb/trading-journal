@@ -46,6 +46,12 @@ public class TradeController {
     return service.create(request);
   }
 
+  @PostMapping("/import")
+  @ResponseStatus(HttpStatus.CREATED)
+  public List<TradeResponse> importTrades(@Valid @RequestBody List<@Valid TradeRequest> requests) {
+    return service.createAll(requests);
+  }
+
   @PutMapping("/{id}")
   public TradeResponse update(@PathVariable String id, @Valid @RequestBody TradeRequest request) {
     return service.update(id, request);

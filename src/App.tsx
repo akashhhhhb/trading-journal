@@ -9,9 +9,11 @@ import {
   Search,
   Sun,
   Trash2,
+  Upload,
   X,
 } from "lucide-react";
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { readSheet } from "read-excel-file/browser";
 
 type Side = "LONG" | "SHORT";
 type Theme = "light" | "dark";
@@ -75,6 +77,25 @@ type Stats = {
   worstTrade: number;
 };
 
+type TradePayload = {
+  symbol: string;
+  side: Side;
+  entryDate: string;
+  exitDate: string | null;
+  entryPrice: number;
+  exitPrice: number | null;
+  quantity: number;
+  fees: number;
+  strategy: string | null;
+  setup: string | null;
+  tags: string[];
+  notes: string | null;
+  emotion: string | null;
+  marketCondition: string | null;
+  riskAmount: number | null;
+  rating: number | null;
+};
+
 const emptyForm: TradeForm = {
   symbol: "",
   side: "LONG",
@@ -106,7 +127,10 @@ export default function App() {
   const [sideFilter, setSideFilter] = useState<"ALL" | Side>("ALL");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [importMessage, setImportMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const importInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     void loadJournal();
@@ -172,6 +196,7 @@ export default function App() {
 
       setForm({ ...emptyForm, entryDate: new Date().toISOString().slice(0, 10) });
       setEditingId(null);
+      setImportMessage(null);
       await loadJournal();
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "Trade could not be saved.");
@@ -188,6 +213,38 @@ export default function App() {
       return;
     }
     await loadJournal();
+  }
+
+  async function importTradesFromExcel(file: File) {
+    setImporting(true);
+    setError(null);
+    setImportMessage(null);
+
+    try {
+      const rows = (await readSheet(file)) as unknown[][];
+      const payloads = rowsToTradePayloads(rows);
+      const response = await fetch(`${apiBaseUrl}/api/trades/import`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payloads),
+      });
+
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        throw new Error(body?.message ?? "Excel trades could not be imported.");
+      }
+
+      const importedTrades = (await response.json()) as Trade[];
+      setImportMessage(`Imported ${importedTrades.length} trade${importedTrades.length === 1 ? "" : "s"}.`);
+      await loadJournal();
+    } catch (importError) {
+      setError(importError instanceof Error ? importError.message : "Excel trades could not be imported.");
+    } finally {
+      setImporting(false);
+      if (importInputRef.current) {
+        importInputRef.current.value = "";
+      }
+    }
   }
 
   function editTrade(trade: Trade) {
@@ -250,6 +307,13 @@ export default function App() {
         <div className="alert" role="alert">
           <Activity size={18} />
           <span>{error}</span>
+        </div>
+      )}
+
+      {importMessage && (
+        <div className="success-alert" role="status">
+          <Upload size={18} />
+          <span>{importMessage}</span>
         </div>
       )}
 
@@ -361,6 +425,22 @@ export default function App() {
               <Search size={18} />
               <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search symbol, strategy, tag" />
             </div>
+            <label className="import-button">
+              <Upload size={17} />
+              {importing ? "Importing" : "Import Excel"}
+              <input
+                ref={importInputRef}
+                type="file"
+                accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                disabled={importing}
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  if (file) {
+                    void importTradesFromExcel(file);
+                  }
+                }}
+              />
+            </label>
             <div className="segmented" aria-label="Side filter">
               {(["ALL", "LONG", "SHORT"] as const).map((side) => (
                 <button
@@ -463,7 +543,7 @@ function Stat({ label, value, tone }: { label: string; value: string; tone?: "po
   );
 }
 
-function toPayload(form: TradeForm) {
+function toPayload(form: TradeForm): TradePayload {
   return {
     symbol: form.symbol.trim().toUpperCase(),
     side: form.side,
@@ -485,6 +565,160 @@ function toPayload(form: TradeForm) {
     riskAmount: nullableNumber(form.riskAmount),
     rating: nullableNumber(form.rating),
   };
+}
+
+function rowsToTradePayloads(rows: unknown[][]): TradePayload[] {
+  const nonEmptyRows = rows.filter((row) => row.some((cell) => cellToString(cell).length > 0));
+  if (nonEmptyRows.length < 2) {
+    throw new Error("Excel sheet must include a header row and at least one trade row.");
+  }
+
+  const headers = nonEmptyRows[0].map((cell) => normalizeHeader(cellToString(cell)));
+  const dataRows = nonEmptyRows.slice(1);
+  const errors: string[] = [];
+  const payloads = dataRows
+    .map((row, index) => {
+      const rowNumber = index + 2;
+      try {
+        return rowToPayload(headers, row, rowNumber);
+      } catch (error) {
+        errors.push(error instanceof Error ? error.message : `Row ${rowNumber} could not be parsed.`);
+        return null;
+      }
+    })
+    .filter((payload): payload is TradePayload => payload !== null);
+
+  if (errors.length > 0) {
+    throw new Error(errors.slice(0, 5).join(" "));
+  }
+
+  if (payloads.length === 0) {
+    throw new Error("No valid trades were found in the Excel sheet.");
+  }
+
+  return payloads;
+}
+
+function rowToPayload(headers: string[], row: unknown[], rowNumber: number): TradePayload {
+  const symbol = requiredText(readByAliases(headers, row, ["symbol", "ticker", "instrument", "scrip"]), "Symbol", rowNumber).toUpperCase();
+  const side = parseSide(requiredText(readByAliases(headers, row, ["side", "direction", "tradeType", "trade"]), "Side", rowNumber), rowNumber);
+  const entryDate = requiredDate(readByAliases(headers, row, ["entryDate", "entryDay", "date", "tradeDate"]), "Entry date", rowNumber);
+  const entryPrice = requiredNumber(readByAliases(headers, row, ["entryPrice", "buyPrice", "openPrice"]), "Entry price", rowNumber);
+  const quantity = requiredNumber(readByAliases(headers, row, ["quantity", "qty", "shares", "lots", "size"]), "Quantity", rowNumber);
+
+  return {
+    symbol,
+    side,
+    entryDate,
+    exitDate: optionalDate(readByAliases(headers, row, ["exitDate", "exitDay", "sellDate", "closeDate"])),
+    entryPrice,
+    exitPrice: optionalNumber(readByAliases(headers, row, ["exitPrice", "sellPrice", "closePrice"])),
+    quantity,
+    fees: optionalNumber(readByAliases(headers, row, ["fees", "fee", "brokerage", "charges", "commission"])) ?? 0,
+    strategy: optionalText(readByAliases(headers, row, ["strategy", "system"])),
+    setup: optionalText(readByAliases(headers, row, ["setup", "pattern"])),
+    tags: optionalText(readByAliases(headers, row, ["tags", "tag"]))
+      ?.split(",")
+      .map((tag) => tag.trim())
+      .filter(Boolean) ?? [],
+    notes: optionalText(readByAliases(headers, row, ["notes", "note", "journal"])),
+    emotion: optionalText(readByAliases(headers, row, ["emotion", "psychology", "mindset"])),
+    marketCondition: optionalText(readByAliases(headers, row, ["marketCondition", "market", "condition"])),
+    riskAmount: optionalNumber(readByAliases(headers, row, ["riskAmount", "risk", "plannedRisk"])),
+    rating: optionalNumber(readByAliases(headers, row, ["rating", "grade", "score"])),
+  };
+}
+
+function readByAliases(headers: string[], row: unknown[], aliases: string[]) {
+  const normalizedAliases = aliases.map(normalizeHeader);
+  const columnIndex = headers.findIndex((header) => normalizedAliases.includes(header));
+  return columnIndex === -1 ? undefined : row[columnIndex];
+}
+
+function requiredText(value: unknown, field: string, rowNumber: number) {
+  const text = optionalText(value);
+  if (!text) {
+    throw new Error(`Row ${rowNumber}: ${field} is required.`);
+  }
+  return text;
+}
+
+function optionalText(value: unknown) {
+  const text = cellToString(value);
+  return text.length === 0 ? null : text;
+}
+
+function requiredNumber(value: unknown, field: string, rowNumber: number) {
+  const numberValue = optionalNumber(value);
+  if (numberValue == null || !Number.isFinite(numberValue)) {
+    throw new Error(`Row ${rowNumber}: ${field} must be a number.`);
+  }
+  return numberValue;
+}
+
+function optionalNumber(value: unknown) {
+  if (value == null || value === "") {
+    return null;
+  }
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : null;
+  }
+  const parsed = Number(cellToString(value).replace(/,/g, ""));
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function requiredDate(value: unknown, field: string, rowNumber: number) {
+  const date = optionalDate(value);
+  if (!date) {
+    throw new Error(`Row ${rowNumber}: ${field} is required.`);
+  }
+  return date;
+}
+
+function optionalDate(value: unknown) {
+  if (value == null || value === "") {
+    return null;
+  }
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return value.toISOString().slice(0, 10);
+  }
+  if (typeof value === "number") {
+    const excelDate = new Date(Math.round((value - 25569) * 86400 * 1000));
+    return Number.isNaN(excelDate.getTime()) ? null : excelDate.toISOString().slice(0, 10);
+  }
+
+  const text = cellToString(value);
+  const isoMatch = text.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (isoMatch) {
+    return `${isoMatch[1]}-${isoMatch[2].padStart(2, "0")}-${isoMatch[3].padStart(2, "0")}`;
+  }
+
+  const indianDateMatch = text.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/);
+  if (indianDateMatch) {
+    return `${indianDateMatch[3]}-${indianDateMatch[2].padStart(2, "0")}-${indianDateMatch[1].padStart(2, "0")}`;
+  }
+
+  const parsed = new Date(text);
+  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString().slice(0, 10);
+}
+
+function parseSide(value: string, rowNumber: number): Side {
+  const normalized = value.trim().toUpperCase();
+  if (["LONG", "BUY", "B"].includes(normalized)) {
+    return "LONG";
+  }
+  if (["SHORT", "SELL", "S"].includes(normalized)) {
+    return "SHORT";
+  }
+  throw new Error(`Row ${rowNumber}: Side must be LONG or SHORT.`);
+}
+
+function cellToString(value: unknown) {
+  return value == null ? "" : String(value).trim();
+}
+
+function normalizeHeader(value: string) {
+  return value.replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
 }
 
 function nullable(value: string) {

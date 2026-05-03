@@ -45,6 +45,17 @@ public class TradeService {
     return toResponse(repository.save(trade));
   }
 
+  public List<TradeResponse> createAll(List<TradeRequest> requests) {
+    List<Trade> trades = requests.stream()
+        .map(request -> {
+          Trade trade = new Trade();
+          applyRequest(trade, request);
+          return trade;
+        })
+        .toList();
+    return repository.saveAll(trades).stream().map(this::toResponse).toList();
+  }
+
   public TradeResponse update(String id, TradeRequest request) {
     Trade trade = repository.findById(id).orElseThrow(() -> new TradeNotFoundException(id));
     applyRequest(trade, request);

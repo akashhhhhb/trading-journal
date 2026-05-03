@@ -10,9 +10,22 @@ React TypeScript frontend, Spring Boot Java backend, and MongoDB persistence for
 ## Features
 
 - Create, edit, delete, and filter trades
+- Import trades from `.xlsx` Excel sheets and persist them to MongoDB
 - Track long and short trades, entry/exit dates, prices, quantity, fees, strategy, setup, tags, notes, market condition, emotion, risk amount, and rating
 - Backend-calculated gross P/L, net P/L, R multiple, win rate, open/closed counts, best trade, and worst trade
 - Docker Compose deployment with MongoDB, API, and nginx-hosted frontend
+
+## Excel Import
+
+The UI accepts `.xlsx` files. Use a header row with columns such as:
+
+```text
+Symbol, Side, Entry Date, Exit Date, Entry Price, Exit Price, Quantity, Fees, Strategy, Setup, Tags, Notes, Emotion, Market, Risk Amount, Rating
+```
+
+Required columns are `Symbol`, `Side`, `Entry Date`, `Entry Price`, and `Quantity`.
+
+`Side` accepts `LONG`, `SHORT`, `BUY`, or `SELL`. Dates can be normal Excel dates, `YYYY-MM-DD`, or `DD/MM/YYYY`.
 
 ## Run With Docker
 
